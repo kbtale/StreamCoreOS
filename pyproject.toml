@@ -1,0 +1,30 @@
+[project]
+name = "microcoreos"
+version = "0.1.0"
+description = "Atomic Microkernel Architecture optimized for AI-Driven Development"
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiosqlite>=0.20.0",
+    "apscheduler>=3.10,<4",
+    "asyncpg>=0.29.0",
+    "bcrypt>=3.2.2",
+    "fastapi>=0.115.0",
+    "pydantic[email]>=2.10.0",
+    "pyjwt>=2.9.0",
+    "python-dotenv>=1.0.0",
+    "uvicorn>=0.30.0",
+    "websockets>=13.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "anyio[trio]>=4.0.0",
+    "pytest>=8.0.0",
+    "watchfiles>=1.1.1",
+]
