@@ -1,0 +1,264 @@
+"""
+Tests for EventBusTool — the system's central nervous system.
+
+Covers: publish/subscribe, wildcard, RPC (request/response),
+RPC timeout, failure handling, auto-unsubscribe of dead handlers,
+failure listeners, and trace history.
+"""
+import asyncio
+import pytest
+from tools.event_bus.event_bus_tool import EventBusTool
+
+
+@pytest.fixture
+def bus():
+    return EventBusTool()
+
+
+# ─── Publish / Subscribe ───────────────────────────────────────────────────
+
+class TestPubSub:
+    @pytest.mark.anyio
+    async def test_subscriber_receives_event(self, bus):
+        received = []
+        async def handler(data): received.append(data)
+
+        await bus.subscribe("user.created", handler)
+        await bus.publish("user.created", {"id": 1})
+        await asyncio.sleep(0)  # allow tasks to run
+
+        assert received == [{"id": 1}]
+
+    @pytest.mark.anyio
+    async def test_multiple_subscribers_all_receive(self, bus):
+        calls = []
+        async def h1(data): calls.append("h1")
+        async def h2(data): calls.append("h2")
+
+        await bus.subscribe("ev", h1)
+        await bus.subscribe("ev", h2)
+        await bus.publish("ev", {})
+        await asyncio.sleep(0)
+
+        assert "h1" in calls
+        assert "h2" in calls
+
+    @pytest.mark.anyio
+    async def test_unsubscribe_stops_delivery(self, bus):
+        received = []
+        async def handler(data): received.append(data)
+
+        await bus.subscribe("ev", handler)
+        await bus.unsubscribe("ev", handler)
+        await bus.publish("ev", {"x": 1})
+        await asyncio.sleep(0)
+
+        assert received == []
+
+    @pytest.mark.anyio
+    async def test_no_subscribers_publish_is_safe(self, bus):
+        # Should not raise
+        await bus.publish("orphan.event", {"x": 1})
+        await asyncio.sleep(0)
+
+    @pytest.mark.anyio
+    async def test_unrelated_event_not_delivered(self, bus):
+        received = []
+        async def handler(data): received.append(data)
+
+        await bus.subscribe("ev.a", handler)
+        await bus.publish("ev.b", {"x": 1})
+        await asyncio.sleep(0)
+
+        assert received == []
+
+
+# ─── Wildcard ─────────────────────────────────────────────────────────────
+
+class TestWildcard:
+    @pytest.mark.anyio
+    async def test_wildcard_receives_all_events(self, bus):
+        seen = []
+        async def monitor(data): seen.append(data.get("_type"))
+
+        await bus.subscribe("*", monitor)
+        await bus.publish("a", {"_type": "a"})
+        await bus.publish("b", {"_type": "b"})
+        await asyncio.sleep(0)
+
+        assert "a" in seen
+        assert "b" in seen
+
+    @pytest.mark.anyio
+    async def test_wildcard_does_not_participate_in_rpc(self, bus):
+        """Wildcard subscribers must not reply to request() calls."""
+        rpc_replied = []
+
+        async def wildcard_handler(data):
+            rpc_replied.append(True)
+            return {"reply": "from wildcard"}  # this should be ignored
+
+        await bus.subscribe("*", wildcard_handler)
+
+        # No direct subscriber → request should timeout
+        with pytest.raises(asyncio.TimeoutError):
+            await bus.request("some.event", {}, timeout=0.05)
+
+        assert rpc_replied  # wildcard was called
+        # but it didn't make the request succeed (TimeoutError was raised)
+
+
+# ─── RPC (request / response) ────────────────────────────────────────────
+
+class TestRPC:
+    @pytest.mark.anyio
+    async def test_request_returns_subscriber_response(self, bus):
+        async def responder(data):
+            return {"result": data["value"] * 2}
+
+        await bus.subscribe("math.double", responder)
+        response = await bus.request("math.double", {"value": 21}, timeout=1)
+
+        assert response == {"result": 42}
+
+    @pytest.mark.anyio
+    async def test_request_timeout_raises(self, bus):
+        with pytest.raises(asyncio.TimeoutError):
+            await bus.request("no.one.listening", {}, timeout=0.05)
+
+    @pytest.mark.anyio
+    async def test_request_first_responder_wins(self, bus):
+        """First subscriber to return a value wins the RPC."""
+        async def slow(data):
+            await asyncio.sleep(10)
+            return {"from": "slow"}
+
+        async def fast(data):
+            return {"from": "fast"}
+
+        await bus.subscribe("race", slow)
+        await bus.subscribe("race", fast)
+        result = await bus.request("race", {}, timeout=1)
+
+        assert result["from"] == "fast"
+
+    @pytest.mark.anyio
+    async def test_request_subscriber_returning_none_does_not_reply(self, bus):
+        """A subscriber returning None should not satisfy the request."""
+        async def silent(data):
+            return None  # no reply
+
+        async def real(data):
+            return {"ok": True}
+
+        await bus.subscribe("ev", silent)
+        await bus.subscribe("ev", real)
+        result = await bus.request("ev", {}, timeout=1)
+
+        assert result == {"ok": True}
+
+
+# ─── Failure handling ─────────────────────────────────────────────────────
+
+class TestFailureHandling:
+    @pytest.mark.anyio
+    async def test_failing_subscriber_does_not_crash_bus(self, bus):
+        """A subscriber that raises must not prevent other subscribers from running."""
+        good_received = []
+
+        async def bad(data): raise ValueError("boom")
+        async def good(data): good_received.append(data)
+
+        await bus.subscribe("ev", bad)
+        await bus.subscribe("ev", good)
+        await bus.publish("ev", {"x": 1})
+        await asyncio.sleep(0.05)
+
+        assert good_received == [{"x": 1}]
+
+    @pytest.mark.anyio
+    async def test_failure_listener_is_called_on_subscriber_error(self, bus):
+        failures = []
+
+        async def bad(data): raise RuntimeError("test error")
+        bus.add_failure_listener(lambda record: failures.append(record))
+
+        await bus.subscribe("ev", bad)
+        await bus.publish("ev", {})
+        await asyncio.sleep(0.05)
+
+        assert len(failures) == 1
+        assert "bad" in failures[0]["subscriber"]
+        assert "test error" in failures[0]["error"]
+
+    @pytest.mark.anyio
+    async def test_auto_unsubscribe_after_max_failures(self, bus):
+        """A handler that fails 5 times in a row should be auto-unsubscribed."""
+        call_count = []
+
+        async def always_fails(data):
+            call_count.append(1)
+            raise RuntimeError("permanent failure")
+
+        await bus.subscribe("ev", always_fails)
+
+        # Trigger MAX_CONSECUTIVE_FAILURES (5) + a few more
+        for _ in range(7):
+            await bus.publish("ev", {})
+            await asyncio.sleep(0.05)
+
+        # Should have been called exactly 5 times before auto-unsubscribe
+        assert len(call_count) == 5
+        assert "always_fails" not in str(bus.get_subscribers())
+
+
+# ─── Observability ────────────────────────────────────────────────────────
+
+class TestObservability:
+    @pytest.mark.anyio
+    async def test_trace_history_records_events(self, bus):
+        await bus.publish("trace.test", {"key": "value"})
+        await asyncio.sleep(0)
+
+        history = bus.get_trace_history()
+        assert any(r["event"] == "trace.test" for r in history)
+
+    @pytest.mark.anyio
+    async def test_trace_history_max_500(self, bus):
+        for i in range(510):
+            await bus.publish(f"ev.{i}", {})
+        await asyncio.sleep(0)
+
+        assert len(bus.get_trace_history()) <= 500
+
+    @pytest.mark.anyio
+    async def test_get_subscribers_reflects_current_state(self, bus):
+        async def h(data): pass
+
+        await bus.subscribe("my.event", h)
+        subs = bus.get_subscribers()
+
+        assert "my.event" in subs
+        assert any("h" in name for name in subs["my.event"])
+
+    @pytest.mark.anyio
+    async def test_add_listener_called_on_every_publish(self, bus):
+        records = []
+        bus.add_listener(lambda r: records.append(r))
+
+        await bus.publish("ev.one", {"a": 1})
+        await bus.publish("ev.two", {"b": 2})
+        await asyncio.sleep(0)
+
+        events = [r["event"] for r in records]
+        assert "ev.one" in events
+        assert "ev.two" in events
+
+    @pytest.mark.anyio
+    async def test_trace_contains_payload_keys(self, bus):
+        await bus.publish("data.event", {"foo": 1, "bar": 2})
+        await asyncio.sleep(0)
+
+        history = bus.get_trace_history()
+        record = next(r for r in history if r["event"] == "data.event")
+        assert set(record["payload_keys"]) == {"foo", "bar"}

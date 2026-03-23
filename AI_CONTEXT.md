@@ -178,6 +178,55 @@ Telemetry Tool (telemetry):
             uv add opentelemetry-sdk opentelemetry-exporter-otlp
 ```
 
+### 🔧 Tool: `twitch` (Status: ✅)
+```text
+Twitch Tool (twitch):
+        - PURPOSE: Complete Twitch platform wrapper — OAuth, Helix API, EventSub WebSocket, IRC Chat.
+        - ENV VARS: TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, TWITCH_REDIRECT_URI (optional).
+        - PATTERN: Register in on_boot() → user authenticates → call connect() → receive events.
+
+        REGISTRATION (call in on_boot, before connect):
+          - register(event_type, version, scopes, condition?):
+              Declare an EventSub subscription and its required OAuth scopes.
+              condition defaults to {"broadcaster_user_id": "{broadcaster_id}"}.
+              {broadcaster_id} is replaced automatically when connect() is called.
+              Example: twitch.register("channel.follow", "2", ["moderator:read:followers"])
+          - on_event(event_type, callback):
+              Register a callback for a Twitch event. Use '*' for all events.
+              Signature: async def handler(event_data: dict)
+
+        CHAT (via EventSub — not IRC):
+          - To receive chat messages: register("channel.chat.message", "1",
+              scopes=["user:read:chat"],
+              condition={"broadcaster_user_id": "{broadcaster_id}", "user_id": "{broadcaster_id}"})
+            then on_event("channel.chat.message", callback)
+          - To send chat messages: await send_message(channel, message)
+              Requires user:write:chat scope (add via require_scopes).
+
+        OAUTH:
+          - get_auth_url() -> tuple[str, str]:
+              Returns (url, state). Save state for CSRF validation in the callback.
+          - await exchange_code(code) -> dict:
+              Exchange OAuth code for tokens: {access_token, refresh_token, scope, expires_in}
+          - await refresh_user_token(refresh_token) -> dict:
+              Refresh a user token. Returns new {access_token, refresh_token, ...}
+          - await get_user_info(access_token) -> dict:
+              Get the authenticated user's Twitch profile {id, login, display_name, ...}
+
+        CONNECTION:
+          - await connect(access_token, broadcaster_id, twitch_login):
+              Connect EventSub WebSocket + IRC chat. Creates all registered subscriptions.
+          - await disconnect(): Disconnect everything.
+
+        CHAT:
+          - await send_message(channel, message): Send a chat message.
+
+        HELIX API:
+          - await get(endpoint, params?, user_token?): GET to Helix.
+          - await post(endpoint, body?, user_token?): POST to Helix.
+          - await delete(endpoint, params?, user_token?): DELETE to Helix.
+```
+
 ### 🔧 Tool: `auth` (Status: ✅)
 ```text
 Authentication Tool (auth):
@@ -220,18 +269,6 @@ Logging Tool (logger):
                 Use it to attribute errors to specific plugins for health tracking.
 ```
 
-### 🔧 Tool: `state` (Status: ✅)
-```text
-In-Memory State Tool (state):
-        - PURPOSE: Share volatile global data between plugins safely.
-        - IDEAL FOR: Counters, temporary caches, and shared business semaphores.
-        - CAPABILITIES:
-            - set(key, value, namespace='default'): Store a value.
-            - get(key, default=None, namespace='default'): Retrieve a value.
-            - increment(key, amount=1, namespace='default'): Atomic increment.
-            - delete(key, namespace='default'): Delete a key.
-```
-
 ### 🔧 Tool: `registry` (Status: ✅)
 ```text
 Systems Registry Tool (registry):
@@ -268,24 +305,16 @@ Systems Registry Tool (registry):
                 Intended for health-check plugins that verify tools proactively.
 ```
 
-### 🔧 Tool: `db` (Status: ✅)
+### 🔧 Tool: `state` (Status: ✅)
 ```text
-Async SQLite Persistence Tool (sqlite):
-        - PURPOSE: Drop-in replacement for PostgreSQL. Lightweight relational data
-          storage using SQLite with async access. Accepts PostgreSQL-style placeholders
-          ($1, $2...) and converts them transparently to SQLite's native '?'.
-        - PLACEHOLDERS: Use $1, $2, $3... (SAME as PostgreSQL — swap-compatible).
+In-Memory State Tool (state):
+        - PURPOSE: Share volatile global data between plugins safely.
+        - IDEAL FOR: Counters, temporary caches, and shared business semaphores.
         - CAPABILITIES:
-            - await query(sql, params?) → list[dict]: Read multiple rows (SELECT).
-            - await query_one(sql, params?) → dict | None: Read a single row (SELECT).
-            - await execute(sql, params?) → int | None: Write data (INSERT/UPDATE/DELETE).
-              With RETURNING (SQLite 3.35+): returns the first column value.
-              INSERT without RETURNING: returns lastrowid. Others: returns affected row count.
-            - await execute_many(sql, params_list) → None: Batch writes.
-            - async with transaction() as tx: Explicit transaction block with auto-commit/rollback.
-              Inside tx: tx.query(), tx.query_one(), tx.execute() — same signatures.
-            - await health_check() → bool: Verify database connectivity.
-        - EXCEPTIONS: Raises DatabaseError or DatabaseConnectionError on failure.
+            - set(key, value, namespace='default'): Store a value.
+            - get(key, default=None, namespace='default'): Retrieve a value.
+            - increment(key, amount=1, namespace='default'): Atomic increment.
+            - delete(key, namespace='default'): Delete a key.
 ```
 
 ### 🔧 Tool: `scheduler` (Status: ✅)
@@ -313,7 +342,59 @@ Scheduler Tool (scheduler):
           and the same 4-method API. Plugins do not change.
 ```
 
+### 🔧 Tool: `db` (Status: ✅)
+```text
+Async SQLite Persistence Tool (sqlite):
+        - PURPOSE: Drop-in replacement for PostgreSQL. Lightweight relational data
+          storage using SQLite with async access. Accepts PostgreSQL-style placeholders
+          ($1, $2...) and converts them transparently to SQLite's native '?'.
+        - PLACEHOLDERS: Use $1, $2, $3... (SAME as PostgreSQL — swap-compatible).
+        - CAPABILITIES:
+            - await query(sql, params?) → list[dict]: Read multiple rows (SELECT).
+            - await query_one(sql, params?) → dict | None: Read a single row (SELECT).
+            - await execute(sql, params?) → int | None: Write data (INSERT/UPDATE/DELETE).
+              With RETURNING (SQLite 3.35+): returns the first column value.
+              INSERT without RETURNING: returns lastrowid. Others: returns affected row count.
+            - await execute_many(sql, params_list) → None: Batch writes.
+            - async with transaction() as tx: Explicit transaction block with auto-commit/rollback.
+              Inside tx: tx.query(), tx.query_one(), tx.execute() — same signatures.
+            - await health_check() → bool: Verify database connectivity.
+        - EXCEPTIONS: Raises DatabaseError or DatabaseConnectionError on failure.
+```
+
 ## 📦 Domains
+
+### `chat_bot`
+- **Tables**: chat_command
+- **Endpoints**: DELETE /chat/commands/{id}, GET /chat/commands, POST /chat/commands, PUT /chat/commands/{id}
+- **Events emitted**: chat.command.executed, chat.command.received, chat.message.received
+- **Events consumed**: chat.command.received, chat.message.received
+- **Dependencies**: db, event_bus, http, logger, state, twitch
+- **Plugins**: ChatAutoResponsePlugin, ChatCommandHandlerPlugin, ChatMessageDispatcherPlugin, ChatStreamPlugin, CreateCommandPlugin, DeleteCommandPlugin, ListCommandsPlugin, UpdateCommandPlugin
+
+### `dashboard`
+- **Tables**: channel_stats
+- **Endpoints**: GET /dashboard/stats, GET /dashboard/stats/history
+- **Events emitted**: dashboard.stats.updated
+- **Events consumed**: dashboard.stats.updated, loyalty.reward.redeemed, moderation.action.taken, stream.session.ended, stream.session.started
+- **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
+- **Plugins**: ChannelStatsCollectorPlugin, ChannelStatsHistoryPlugin, DashboardAlertsPlugin, DashboardStatsPlugin
+
+### `loyalty`
+- **Tables**: viewer_points
+- **Endpoints**: GET /loyalty/leaderboard, GET /loyalty/rewards, GET /loyalty/viewers/{twitch_id}, GET /loyalty/viewers/{twitch_id}/history, POST /loyalty/redeem, POST /loyalty/rewards
+- **Events emitted**: loyalty.points.awarded, loyalty.reward.redeemed
+- **Events consumed**: chat.message.received
+- **Dependencies**: db, event_bus, http, logger, state, twitch
+- **Plugins**: AwardPointsPlugin, ChatActivityPointsPlugin, CreateRewardPlugin, GetViewerPointsPlugin, LeaderboardPlugin, ListRewardsPlugin, PointsHistoryPlugin, RedeemRewardPlugin
+
+### `moderation`
+- **Tables**: mod_rule
+- **Endpoints**: DELETE /moderation/rules/{id}, GET /moderation/log, GET /moderation/rules, POST /moderation/ban, POST /moderation/rules, POST /moderation/timeout, POST /moderation/unban, PUT /moderation/rules/{id}
+- **Events emitted**: moderation.action.taken, moderation.rules.updated
+- **Events consumed**: chat.message.received, moderation.rules.updated
+- **Dependencies**: db, event_bus, http, logger, state, twitch
+- **Plugins**: AutoModPlugin, CreateModRulePlugin, DeleteModRulePlugin, ListModRulesPlugin, ManualBanPlugin, ManualTimeoutPlugin, ManualUnbanPlugin, ModLogPlugin, UpdateModRulePlugin
 
 ### `ping`
 - **Tables**: none
@@ -323,6 +404,14 @@ Scheduler Tool (scheduler):
 - **Dependencies**: http, logger
 - **Plugins**: PingPlugin
 
+### `stream_state`
+- **Tables**: stream_session
+- **Endpoints**: GET /stream/sessions, GET /stream/status
+- **Events emitted**: stream.session.ended, stream.session.started
+- **Events consumed**: stream.status.requested
+- **Dependencies**: db, event_bus, http, logger, state, twitch
+- **Plugins**: GetStreamStatusPlugin, StreamHistoryPlugin, StreamStateRpcPlugin, StreamStatusPlugin
+
 ### `system`
 - **Tables**: none
 - **Endpoints**: GET /system/events, GET /system/status, GET /system/traces/flat, GET /system/traces/tree
@@ -331,11 +420,11 @@ Scheduler Tool (scheduler):
 - **Dependencies**: config, db, event_bus, http, logger, registry
 - **Plugins**: EventDeliveryMonitorPlugin, SystemEventsPlugin, SystemEventsStreamPlugin, SystemLogsStreamPlugin, SystemStatusPlugin, SystemTracesPlugin, SystemTracesStreamPlugin, ToolHealthPlugin
 
-### `users`
-- **Tables**: user
-- **Endpoints**: DELETE /users/{user_id}, GET /users, GET /users/me, GET /users/{user_id}, POST /auth/login, POST /auth/logout, POST /users, PUT /users/{user_id}
-- **Events emitted**: user.created, user.deleted, welcome.notify.sent
-- **Events consumed**: user.created
-- **Dependencies**: auth, db, event_bus, http, logger
-- **Plugins**: CreateUserPlugin, DeleteUserPlugin, GetMePlugin, GetUserByIdPlugin, ListUsersPlugin, LoginPlugin, LogoutPlugin, UpdateUserPlugin, WelcomeServicePlugin
+### `twitch_auth`
+- **Tables**: twitch_token
+- **Endpoints**: GET /auth/twitch, GET /auth/twitch/callback
+- **Events emitted**: none
+- **Events consumed**: none
+- **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
+- **Plugins**: RestoreSessionPlugin, TwitchOAuthCallbackPlugin, TwitchOAuthStartPlugin, TwitchTokenRefreshPlugin
 

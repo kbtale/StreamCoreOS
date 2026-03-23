@@ -1,0 +1,82 @@
+import asyncio
+import json
+from datetime import datetime, timezone
+from core.base_plugin import BasePlugin
+
+# Internal event_bus events to forward as alerts
+_BUS_EVENTS = [
+    "stream.session.started",
+    "stream.session.ended",
+    "loyalty.reward.redeemed",
+    "moderation.action.taken",
+    "dashboard.stats.updated",
+]
+
+
+class DashboardAlertsPlugin(BasePlugin):
+    """
+    GET /dashboard/alerts  (SSE)
+
+    Streams real-time alerts to dashboard clients. Two event sources:
+
+    1. Twitch events via twitch.on_event("*") — follows, subs, raids, cheers, etc.
+    2. Internal events via event_bus.subscribe — stream on/off, reward redeems, mod actions.
+
+    Each SSE message is a JSON object with {type, data, timestamp}.
+    Per-connection queues ensure isolated, non-blocking delivery to each client.
+    """
+
+    def __init__(self, http, twitch, event_bus, logger):
+        self.http = http
+        self.twitch = twitch
+        self.bus = event_bus
+        self.logger = logger
+        self._queues: list[asyncio.Queue] = []
+
+    async def on_boot(self):
+        # All Twitch EventSub events (wildcard — no new subscriptions created)
+        self.twitch.on_event("*", self._on_twitch_event)
+
+        # Internal events from other domains
+        for event_name in _BUS_EVENTS:
+            await self.bus.subscribe(event_name, self._make_bus_handler(event_name))
+
+        self.http.add_sse_endpoint(
+            "/dashboard/alerts",
+            self._stream,
+            tags=["Dashboard"],
+        )
+
+    def _make_bus_handler(self, event_name: str):
+        async def handler(data: dict):
+            await self._push(event_name, data)
+        return handler
+
+    async def _on_twitch_event(self, event_data: dict):
+        # Wildcard handler: _event_type is injected by TwitchEventSubClient
+        event_type = event_data.pop("_event_type", "twitch.event")
+        await self._push(event_type, event_data)
+
+    async def _push(self, event_type: str, data: dict):
+        if not self._queues:
+            return
+        message = {
+            "type": event_type,
+            "data": data,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        for queue in self._queues:
+            try:
+                queue.put_nowait(message)
+            except asyncio.QueueFull:
+                pass  # slow client — drop
+
+    async def _stream(self, data: dict):
+        queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+        self._queues.append(queue)
+        try:
+            while True:
+                alert = await queue.get()
+                yield f"data: {json.dumps(alert)}\n\n"
+        finally:
+            self._queues.remove(queue)
