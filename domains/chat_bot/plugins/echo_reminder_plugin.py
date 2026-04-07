@@ -5,7 +5,7 @@ from core.base_plugin import BasePlugin
 
 class EchoReminderPlugin(BasePlugin):
     """
-    Skeleton for the !echo [time] [message] command.
+    Schedules a delayed message using !echo or !reminder [time] [message].
     """
 
     def __init__(self, scheduler, twitch, state, event_bus, logger):
@@ -21,7 +21,8 @@ class EchoReminderPlugin(BasePlugin):
         await self.bus.subscribe("chat.command.received", self._on_command)
 
     async def _on_command(self, data: dict):
-        if data.get("command") != "!echo":
+        command = data.get("command", "").lower()
+        if command not in ["!echo", "!reminder"]:
             return
 
         # Check permissions (Broadcaster, Mod, or VIP)

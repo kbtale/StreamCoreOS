@@ -30,25 +30,33 @@ async def test_echo_parsing_and_scheduling(plugin, mock_tools):
     }
     
     await plugin._on_command(data)
-    
-    # Verify parsing and scheduling
     mock_tools["scheduler"].add_one_shot.assert_called_once()
     kwargs = mock_tools["scheduler"].add_one_shot.call_args.kwargs
     assert kwargs["message"] == "Test message"
     assert kwargs["channel"] == "test_channel"
-    
-    # Check run_at is 10s from now
     diff = (kwargs["run_at"] - datetime.now()).total_seconds()
     assert 9 <= diff <= 11
-    
-    # Verify confirmation
     mock_tools["twitch"].send_message.assert_called_with(
         "test_channel",
         "@TestUser Mensaje programado para dentro de 10s. 😊"
     )
 
 @pytest.mark.anyio
-async def test_echo_permissions_denied(plugin, mock_tools):
+async def test_echo_reminder_synonym_accepted(plugin, mock_tools):
+    mock_tools["state"].get.return_value = 0
+    data = {
+        "command": "!reminder",
+        "args": "10s Synonym test",
+        "channel": "ch",
+        "display_name": "User",
+        "is_mod": True,
+        "badges": {}
+    }
+    
+    await plugin._on_command(data)
+    mock_tools["scheduler"].add_one_shot.assert_called_once()
+    kwargs = mock_tools["scheduler"].add_one_shot.call_args.kwargs
+    assert kwargs["message"] == "Synonym test"
     # Regular viewer
     data = {
         "command": "!echo",
