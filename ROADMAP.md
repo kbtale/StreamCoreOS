@@ -155,3 +155,5 @@ What is gained over the existing causality system (`/system/traces`):
 - Cross-service distributed tracing via `traceparent` header propagation
 
 Depends on Issue 7 (ToolProxy timing) as a prerequisite.
+
+Boton de busqueda de conexiones

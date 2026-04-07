@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS timers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    message TEXT NOT NULL,
+    interval_minutes INTEGER NOT NULL,
+    min_lines INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER DEFAULT 1,
+    last_executed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

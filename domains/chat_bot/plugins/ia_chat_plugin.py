@@ -2,19 +2,20 @@ import asyncio
 import httpx
 from core.base_plugin import BasePlugin
 
-OLLAMA_URL = "http://192.168.1.137:11434/api/generate"
-OLLAMA_MODEL = "lfm2:latest"
+# AI Configuration (Aligned with TailwindModerationIAPlugin)
+AI_URL = "http://192.168.1.80:8080/v1/chat/completions"
+AI_MODEL = "LFM2-24B-A2B-Q4_K_M"
 MAX_RESPONSE_CHARS = 450  # Twitch chat limit is 500
 
 
 class IAChatPlugin(BasePlugin):
     """
-    Responds to !ia <question> in Twitch chat using a local Ollama model (lfm2).
+    Responds to !ia <question> in Twitch chat using a local LLM server.
 
     Usage in chat:  !ia ¿cuántos planetas tiene el sistema solar?
     The bot replies directly in chat with the AI's answer (truncated to fit Twitch limit).
 
-    Per-user cooldown of 15 s to prevent abuse.
+    Per-user cooldown of 120 s to prevent abuse.
     """
 
     COOLDOWN_S = 120
@@ -58,25 +59,33 @@ class IAChatPlugin(BasePlugin):
         )
 
         try:
-            answer = await self._query_ollama(question)
+            answer = await self._query_ai(question)
             reply = f"@{data['display_name']} {answer}"
             if len(reply) > MAX_RESPONSE_CHARS:
                 reply = reply[: MAX_RESPONSE_CHARS - 1] + "…"
             await self.twitch.send_message(data["channel"], reply)
         except Exception as e:
-            self.logger.error(f"[IAChatPlugin] Ollama error: {e}")
+            self.logger.error(f"[IAChatPlugin] AI error: {e}")
             await self.twitch.send_message(
                 data["channel"],
                 f"@{data['display_name']} No pude obtener respuesta de la IA. Inténtalo más tarde.",
             )
 
-    async def _query_ollama(self, prompt: str) -> str:
+    async def _query_ai(self, prompt: str) -> str:
         payload = {
-            "model": OLLAMA_MODEL,
-            "prompt": f"Responde en menos de 20 palabras: {prompt}",
-            "stream": False,
+            "model": AI_MODEL,
+            "messages": [
+                {
+                    "role": "system", 
+                    "content": "Eres un asistente de chat de Twitch servicial y conciso. Responde siempre en español y en menos de 40 palabras."
+                },
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 200
         }
         async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(OLLAMA_URL, json=payload)
+            resp = await client.post(AI_URL, json=payload)
             resp.raise_for_status()
-            return resp.json().get("response", "").strip()
+            result = resp.json()
+            return result["choices"][0]["message"]["content"].strip()

@@ -42,15 +42,16 @@ class GetStreamStatusPlugin(BasePlugin):
     async def execute(self, data: dict, context=None):
         try:
             online = self.state.get("online", default=False, namespace="stream_state")
+            status_data = StreamStatusData(
+                online=online,
+                session_id=self.state.get("session_id", namespace="stream_state"),
+                started_at=self.state.get("started_at", namespace="stream_state"),
+                ended_at=self.state.get("ended_at", namespace="stream_state"),
+                broadcaster_login=self.state.get("broadcaster_login", namespace="stream_state"),
+            )
             return {
                 "success": True,
-                "data": {
-                    "online": online,
-                    "session_id": self.state.get("session_id", namespace="stream_state"),
-                    "started_at": self.state.get("started_at", namespace="stream_state"),
-                    "ended_at": self.state.get("ended_at", namespace="stream_state"),
-                    "broadcaster_login": self.state.get("broadcaster_login", namespace="stream_state"),
-                },
+                "data": status_data.model_dump(),
             }
         except Exception as e:
             self.logger.error(f"[GetStreamStatus] {e}")

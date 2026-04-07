@@ -42,6 +42,7 @@ class ChatMessageDispatcherPlugin(BasePlugin):
 
         msg = {
             "type": "PRIVMSG",
+            "message_id": event.get("message_id", ""),
             "channel": event.get("broadcaster_user_login", ""),
             "nick": event.get("chatter_user_login", ""),
             "display_name": event.get("chatter_user_name", event.get("chatter_user_login", "")),

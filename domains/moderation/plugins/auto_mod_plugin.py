@@ -19,7 +19,7 @@ class AutoModPlugin(BasePlugin):
       - caps_filter   : message is >70% uppercase and >10 chars
       - spam_filter   : message contains repeated characters (e.g. "aaaaa")
 
-    Actions: timeout (duration_s), ban, delete (not yet via Helix — logs only for delete)
+    Actions: timeout (duration_s), ban, delete
     """
 
     def __init__(self, twitch, event_bus, db, state, logger):
@@ -30,7 +30,11 @@ class AutoModPlugin(BasePlugin):
         self.logger = logger
 
     async def on_boot(self):
-        self.twitch.require_scopes(["moderator:manage:banned_users"])
+        # Added moderator:manage:chat_messages for deletion support
+        self.twitch.require_scopes([
+            "moderator:manage:banned_users",
+            "moderator:manage:chat_messages"
+        ])
         await self.bus.subscribe("chat.message.received", self._on_message)
         await self.bus.subscribe("moderation.rules.updated", self._invalidate_cache)
         await self._load_rules()
@@ -55,10 +59,11 @@ class AutoModPlugin(BasePlugin):
         message = msg.get("message", "")
         user_id = msg.get("user_id", "")
         display_name = msg.get("display_name", "")
+        message_id = msg.get("message_id", "")
 
         for rule in rules:
             if self._matches(rule, message):
-                await self._enforce(rule, user_id, display_name, message)
+                await self._enforce(rule, user_id, display_name, message, message_id)
                 break  # apply first matching rule only
 
     def _matches(self, rule: dict, message: str) -> bool:
@@ -86,7 +91,7 @@ class AutoModPlugin(BasePlugin):
 
         return False
 
-    async def _enforce(self, rule: dict, user_id: str, display_name: str, message: str):
+    async def _enforce(self, rule: dict, user_id: str, display_name: str, message: str, message_id: str):
         action = rule["action"]
         session = self.twitch.get_session()
         if not session:
@@ -94,21 +99,35 @@ class AutoModPlugin(BasePlugin):
         broadcaster_id = session["broadcaster_id"]
         access_token = session["access_token"]
         reason = f"Auto-mod: {rule['type']} rule #{rule['id']}"
-        endpoint = f"/moderation/bans?broadcaster_id={broadcaster_id}&moderator_id={broadcaster_id}"
 
         try:
             if action == "ban" and broadcaster_id and access_token:
+                endpoint = f"/moderation/bans?broadcaster_id={broadcaster_id}&moderator_id={broadcaster_id}"
                 await self.twitch.post(
                     endpoint,
                     body={"data": {"user_id": user_id, "reason": reason}},
                     user_token=access_token,
                 )
             elif action == "timeout" and broadcaster_id and access_token:
+                endpoint = f"/moderation/bans?broadcaster_id={broadcaster_id}&moderator_id={broadcaster_id}"
                 duration = rule.get("duration_s") or 600
                 await self.twitch.post(
                     endpoint,
                     body={"data": {"user_id": user_id, "duration": duration, "reason": reason}},
                     user_token=access_token,
+                )
+            elif action == "delete" and broadcaster_id and access_token and message_id:
+                # DELETE /moderation/chat?broadcaster_id=<ID>&moderator_id=<ID>&message_id=<ID>
+                endpoint = "/moderation/chat"
+                params = {
+                    "broadcaster_id": broadcaster_id,
+                    "moderator_id": broadcaster_id,
+                    "message_id": message_id
+                }
+                await self.twitch.delete(
+                    endpoint,
+                    params=params,
+                    user_token=access_token
                 )
         except Exception as e:
             self.logger.error(f"[AutoMod] Helix API call failed for {action} on {display_name}: {e}")

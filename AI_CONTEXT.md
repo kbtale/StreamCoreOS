@@ -394,7 +394,7 @@ Async SQLite Persistence Tool (sqlite):
 - **Events emitted**: moderation.action.taken, moderation.rules.updated
 - **Events consumed**: chat.message.received, moderation.rules.updated
 - **Dependencies**: db, event_bus, http, logger, state, twitch
-- **Plugins**: AiModPlugin, AutoModPlugin, CreateModRulePlugin, DeleteModRulePlugin, ListModRulesPlugin, ManualBanPlugin, ManualTimeoutPlugin, ManualUnbanPlugin, ModLogPlugin, UpdateModRulePlugin
+- **Plugins**: AutoModPlugin, CreateModRulePlugin, DeleteModRulePlugin, ListModRulesPlugin, ManualBanPlugin, ManualTimeoutPlugin, ManualUnbanPlugin, ModLogPlugin, TailwindModerationIAPlugin, UpdateModRulePlugin
 
 ### `ping`
 - **Tables**: none
@@ -409,7 +409,7 @@ Async SQLite Persistence Tool (sqlite):
 - **Endpoints**: GET /stream/sessions, GET /stream/status
 - **Events emitted**: stream.session.ended, stream.session.started
 - **Events consumed**: stream.status.requested
-- **Dependencies**: db, event_bus, http, logger, state, twitch
+- **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: GetStreamStatusPlugin, StreamHistoryPlugin, StreamStateRpcPlugin, StreamStatusPlugin
 
 ### `system`
@@ -420,6 +420,14 @@ Async SQLite Persistence Tool (sqlite):
 - **Dependencies**: config, db, event_bus, http, logger, registry
 - **Plugins**: EventDeliveryMonitorPlugin, SystemEventsPlugin, SystemEventsStreamPlugin, SystemLogsStreamPlugin, SystemStatusPlugin, SystemTracesPlugin, SystemTracesStreamPlugin, ToolHealthPlugin
 
+### `timers`
+- **Tables**: timer
+- **Endpoints**: DELETE /timers/{id}, GET /timers, POST /timers, PUT /timers/{id}
+- **Events emitted**: timer.created, timer.deleted, timer.updated
+- **Events consumed**: chat.message.received, timer.created, timer.deleted, timer.updated
+- **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
+- **Plugins**: CreateTimerPlugin, DeleteTimerPlugin, GetTimersPlugin, TimerExecutorPlugin, UpdateTimerPlugin
+
 ### `twitch_auth`
 - **Tables**: twitch_token
 - **Endpoints**: GET /auth/twitch, GET /auth/twitch/callback
@@ -427,4 +435,12 @@ Async SQLite Persistence Tool (sqlite):
 - **Events consumed**: none
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: RestoreSessionPlugin, TwitchOAuthCallbackPlugin, TwitchOAuthStartPlugin, TwitchTokenRefreshPlugin
+
+### `twitch_redemptions`
+- **Tables**: redemption
+- **Endpoints**: none
+- **Events emitted**: none
+- **Events consumed**: none
+- **Dependencies**: logger, twitch
+- **Plugins**: HackThePlanetPlugin
 
