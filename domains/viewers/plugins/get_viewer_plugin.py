@@ -22,7 +22,7 @@ class GetViewerResponse(BaseModel):
 
 
 class GetViewerPlugin(BasePlugin):
-    """GET /viewers/{twitch_id} — Fetch a viewer's profile."""
+    """GET /viewers/{login} — Fetch a viewer's profile by login name."""
 
     def __init__(self, http, db, logger):
         self.http = http
@@ -31,7 +31,7 @@ class GetViewerPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/viewers/{twitch_id}", "GET", self.execute,
+            "/viewers/{login}", "GET", self.execute,
             tags=["Viewers"],
             response_model=GetViewerResponse,
         )
@@ -39,7 +39,8 @@ class GetViewerPlugin(BasePlugin):
     async def execute(self, data: dict, context=None):
         try:
             row = await self.db.query_one(
-                "SELECT * FROM viewers WHERE twitch_id=$1", [data["twitch_id"]]
+                "SELECT * FROM viewers WHERE lower(login) LIKE lower($1) ORDER BY points DESC LIMIT 1",
+                [f"%{data['login']}%"]
             )
             if not row:
                 if context:

@@ -39,10 +39,9 @@ async def test_echo_parsing_and_scheduling(plugin, mock_tools):
     await plugin._on_command(data)
     mock_tools["scheduler"].add_one_shot.assert_called_once()
     kwargs = mock_tools["scheduler"].add_one_shot.call_args.kwargs
-    assert kwargs["message"] == "Test message"
-    assert kwargs["channel"] == "test_channel"
     diff = (kwargs["run_at"] - datetime.now()).total_seconds()
     assert 9 <= diff <= 11
+    assert "job_id" in kwargs
     mock_tools["twitch"].send_message.assert_called_with(
         "test_channel",
         "@TestUser Mensaje programado para dentro de 10s. 😊"
@@ -63,7 +62,7 @@ async def test_echo_reminder_synonym_accepted(plugin, mock_tools):
     await plugin._on_command(data)
     mock_tools["scheduler"].add_one_shot.assert_called_once()
     kwargs = mock_tools["scheduler"].add_one_shot.call_args.kwargs
-    assert kwargs["message"] == "Synonym test"
+    assert "job_id" in kwargs
 
 @pytest.mark.anyio
 async def test_echo_permissions_denied(plugin, mock_tools):

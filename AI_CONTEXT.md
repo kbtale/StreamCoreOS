@@ -438,9 +438,9 @@ Async SQLite Persistence Tool (sqlite):
 
 ### `viewers`
 - **Tables**: viewer
-- **Endpoints**: DELETE /viewers/regulars/{twitch_id}, GET /viewers/leaderboard, GET /viewers/regulars, GET /viewers/{twitch_id}, POST /viewers/regulars, POST /viewers/{twitch_id}/points
+- **Endpoints**: DELETE /viewers/regulars/{twitch_id}, GET /viewers, GET /viewers/leaderboard, GET /viewers/regulars, GET /viewers/{login}, POST /viewers/regulars, POST /viewers/{twitch_id}/points
 - **Events emitted**: viewer.points.awarded, viewer.regular.added, viewer.regular.removed
 - **Events consumed**: chat.command.received, chat.message.received
 - **Dependencies**: db, event_bus, http, logger, twitch
-- **Plugins**: AddRegularPlugin, AdjustPointsPlugin, GetViewerPlugin, LeaderboardPlugin, ListRegularsPlugin, RegularsCommandPlugin, RemoveRegularPlugin, ViewerActivityPlugin
+- **Plugins**: AddRegularPlugin, AdjustPointsPlugin, GetViewerPlugin, LeaderboardPlugin, ListRegularsPlugin, ListViewersPlugin, RegularsCommandPlugin, RemoveRegularPlugin, ViewerActivityPlugin
 
