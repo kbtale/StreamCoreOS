@@ -9,6 +9,7 @@ class LeaderboardEntry(BaseModel):
     display_name: str
     points: int
     total_earned: int
+    is_regular: bool
 
 
 class LeaderboardResponse(BaseModel):
@@ -18,7 +19,7 @@ class LeaderboardResponse(BaseModel):
 
 
 class LeaderboardPlugin(BasePlugin):
-    """GET /loyalty/leaderboard — Top viewers by current points. Query param: limit (default 10)."""
+    """GET /viewers/leaderboard?limit=10 — Top viewers by points."""
 
     def __init__(self, http, db, logger):
         self.http = http
@@ -27,23 +28,23 @@ class LeaderboardPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/loyalty/leaderboard", "GET", self.execute,
-            tags=["Loyalty"],
+            "/viewers/leaderboard", "GET", self.execute,
+            tags=["Viewers"],
             response_model=LeaderboardResponse,
         )
 
     async def execute(self, data: dict, context=None):
         try:
-            limit = max(1, min(int(data.get("limit", 10)), 100))
+            limit = min(int(data.get("limit", 10)), 100)
             rows = await self.db.query(
-                """SELECT twitch_id, display_name, points, total_earned
-                   FROM viewer_points ORDER BY points DESC LIMIT $1""",
+                "SELECT twitch_id, display_name, points, total_earned, is_regular FROM viewers ORDER BY points DESC LIMIT $1",
                 [limit],
             )
-            leaderboard = [
-                {"rank": i + 1, **row} for i, row in enumerate(rows)
+            entries = [
+                {**r, "rank": i + 1, "is_regular": bool(r["is_regular"])}
+                for i, r in enumerate(rows)
             ]
-            return {"success": True, "data": leaderboard}
+            return {"success": True, "data": entries}
         except Exception as e:
             self.logger.error(f"[Leaderboard] {e}")
             return {"success": False, "error": str(e)}

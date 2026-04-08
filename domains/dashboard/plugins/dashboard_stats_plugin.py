@@ -27,7 +27,7 @@ class DashboardStatsData(BaseModel):
     stream: StreamInfo
     top_viewers: list[TopViewer]
     recent_mod_actions: list[RecentModAction]
-    total_loyalty_viewers: int
+    total_viewers: int
 
 
 class DashboardStatsResponse(BaseModel):
@@ -91,18 +91,18 @@ class DashboardStatsPlugin(BasePlugin):
                 except Exception as e:
                     self.logger.error(f"[DashboardStats] Helix API error: {e}")
 
-            # Top 5 loyalty viewers — queries loyalty domain table directly (same DB)
+            # Top 5 viewers by points
             top_viewers = await self.db.query(
-                "SELECT twitch_id, display_name, points FROM viewer_points ORDER BY points DESC LIMIT 5"
+                "SELECT twitch_id, display_name, points FROM viewers ORDER BY points DESC LIMIT 5"
             )
 
-            # Last 5 mod actions — queries moderation domain table directly (same DB)
+            # Last 5 mod actions
             recent_mod = await self.db.query(
                 "SELECT display_name, action, reason, created_at FROM mod_log ORDER BY created_at DESC LIMIT 5"
             )
 
-            # Total loyalty viewers
-            count_row = await self.db.query_one("SELECT count(*) as total FROM viewer_points")
+            # Total known viewers
+            count_row = await self.db.query_one("SELECT count(*) as total FROM viewers")
             total_viewers = count_row["total"] if count_row else 0
 
             return {
@@ -116,7 +116,7 @@ class DashboardStatsPlugin(BasePlugin):
                     },
                     "top_viewers": top_viewers,
                     "recent_mod_actions": recent_mod,
-                    "total_loyalty_viewers": total_viewers,
+                    "total_viewers": total_viewers,
                 },
             }
         except Exception as e:

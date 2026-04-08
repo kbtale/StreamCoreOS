@@ -21,9 +21,13 @@ A personal Twitch streaming backend built on [MicroCoreOS](https://github.com/th
     - [`twitch_auth`](#twitch_auth)
     - [`stream_state`](#stream_state)
     - [`chat_bot`](#chat_bot)
-    - [`loyalty`](#loyalty)
+    - [`viewers`](#viewers)
     - [`moderation`](#moderation)
+    - [`timers`](#timers)
     - [`dashboard`](#dashboard)
+    - [`system`](#system)
+    - [`twitch_redemptions`](#twitch_redemptions)
+    - [`ping`](#ping)
   - [Event Catalog](#event-catalog)
   - [How to Write a New Feature](#how-to-write-a-new-feature)
     - [1. HTTP Endpoint](#1-http-endpoint)
@@ -89,10 +93,14 @@ StreamCoreOS/
 └── domains/
     ├── twitch_auth/             # OAuth flow + token storage + session restore
     ├── stream_state/            # Online/offline tracking + history
-    ├── chat_bot/                # IRC dispatch + commands + chat stream SSE
-    ├── loyalty/                 # Points system + leaderboard + rewards
+    ├── chat_bot/                # IRC dispatch + commands + variables + chat stream SSE
+    ├── viewers/                 # Viewer profiles + points + regulars
     ├── moderation/              # Auto-mod + manual ban/timeout/unban
-    └── dashboard/               # Stats endpoint + real-time alerts SSE
+    ├── timers/                  # Recurring scheduled chat messages
+    ├── dashboard/               # Stats endpoint + real-time alerts SSE
+    ├── system/                  # Observability — traces, events, health, SSE logs
+    ├── twitch_redemptions/      # Channel point redemption handlers
+    └── ping/                    # Health check endpoint
 ```
 
 **One rule:** 1 file = 1 feature. Every plugin lives in `domains/{domain}/plugins/` and is auto-discovered. Never touch `main.py`.
@@ -210,41 +218,130 @@ Publishes: `stream.session.started`, `stream.session.ended`
 
 ### `chat_bot`
 
-IRC chat bridge, command system, and real-time chat stream.
+IRC chat bridge, command system, stream variables, and real-time chat stream.
 
 | Plugin | What it does |
 |---|---|
 | `chat_message_dispatcher_plugin` | Receives all IRC messages, logs to DB, publishes events |
-| `chat_command_handler_plugin` | Listens to `chat.command.received`, looks up command in DB |
+| `chat_command_handler_plugin` | Listens to `chat.command.received`, resolves variables, sends response |
 | `chat_auto_response_plugin` | Sends auto-messages on follow, sub, resub, gift, raid |
 | `chat_stream_plugin` | `GET /chat/stream` — SSE stream of all chat messages |
+| `echo_reminder_plugin` | `!echo` / `!reminder` — schedule a delayed chat message (mod/VIP only) |
+| `ia_chat_plugin` | AI-powered chat responses via `!ia` command |
 | `create_command_plugin` | `POST /chat/commands` |
 | `list_commands_plugin` | `GET /chat/commands` |
-| `update_command_plugin` | `PUT /chat/commands/{name}` |
-| `delete_command_plugin` | `DELETE /chat/commands/{name}` |
+| `update_command_plugin` | `PUT /chat/commands/{id}` |
+| `delete_command_plugin` | `DELETE /chat/commands/{id}` |
+| `commands_list_plugin` | `!commands` — lists all enabled commands in chat |
+| `create_var_plugin` | `POST /chat/vars` |
+| `list_vars_plugin` | `GET /chat/vars` |
+| `update_var_plugin` | `PUT /chat/vars/{id}` |
+| `delete_var_plugin` | `DELETE /chat/vars/{id}` |
+| `var_command_plugin` | `!setvar` / `!deletevar` — manage variables from chat (mod/VIP only) |
 
 Publishes: `chat.message.received`, `chat.command.received`, `chat.command.executed`
 
+#### Command fields
+
+| Field | Default | Description |
+|---|---|---|
+| `name` | — | Command trigger, e.g. `!deaths`. Must start with `!`. |
+| `response` | — | Response template. Supports placeholders (see below). |
+| `userlevel` | `everyone` | Minimum permission required to trigger the command. |
+| `cooldown_s` | `30` | Per-user cooldown in seconds. |
+| `global_cooldown_s` | `0` | Global cooldown in seconds — blocks all users until it expires. |
+| `use_count` | `0` | How many times the command has been used. Read-only via API. |
+| `enabled` | `true` | Whether the command is active. |
+
+**Userlevels** (in order): `everyone` → `subscriber` → `vip` → `regular` → `moderator` → `broadcaster`
+
+#### Command response variables
+
+Use these placeholders in any command's `response` field:
+
+| Variable | Resolves to |
+|---|---|
+| `{user}` | Display name of the viewer who triggered the command |
+| `{touser}` | First word after the command (strips `@`), or `{user}` if no args |
+| `{channel}` | Channel name |
+| `{count}` | How many times this command has been used (including this trigger) |
+| `{random X-Y}` | Random integer between X and Y inclusive, e.g. `{random 1-100}` |
+| `{uptime}` | How long the stream has been live (e.g. `"1 hour, 20 minutes"`) |
+| `{game}` | Current game/category from Twitch |
+| `{viewers}` | Current viewer count |
+| `{followage}` | How long the triggering viewer has been following |
+| `{var:name}` | Value of a stream variable (see variables below) |
+
+#### Stream variables
+
+Stream variables are named key-value pairs stored in DB, usable in any command response via `{var:name}`.
+
+```
+# From the API
+POST /chat/vars  { "name": "deaths", "value": "0" }
+
+# From chat (mod/VIP only)
+!setvar deaths 0          → creates or sets deaths = 0
+!setvar deaths +1         → increments (if numeric)
+!setvar deaths -1         → decrements (if numeric)
+!setvar deaths reset      → resets to 0
+!setvar boss "Margit"     → sets a text value
+!deletevar deaths         → deletes the variable
+```
+
+Example — create a deaths counter visible in chat:
+
+```
+POST /chat/commands  { "name": "!deaths", "response": "💀 Deaths: {var:deaths}" }
+
+# In stream:
+!setvar deaths +1   → "deaths = 1"
+!deaths             → "💀 Deaths: 1"
+```
+
+#### `!echo` / `!reminder`
+
+Schedule a delayed message. Mod/VIP only. Maximum 3 concurrent echoes.
+
+```
+!echo 5m "Check out the new merch!"
+!reminder 1h "Time to take a break"
+```
+
+Supported time units: `s` (seconds), `m` (minutes), `h` (hours).
+
 ---
 
-### `loyalty`
+### `viewers`
 
-Points system for viewer engagement.
+Viewer profiles and regulars management.
+
+A viewer is created automatically the first time they chat. Regulars are a trusted tier above subscribers/VIPs but below mods — they can be granted access to commands with `userlevel: regular`.
 
 | Plugin | What it does |
 |---|---|
-| `award_points_plugin` | Awards points on follow/sub/resub/gift/cheer/raid |
-| `chat_activity_points_plugin` | Awards 5pts per chat message (60s cooldown per user) |
-| `get_viewer_points_plugin` | `GET /loyalty/points/{twitch_id}` |
-| `leaderboard_plugin` | `GET /loyalty/leaderboard?limit=10` |
-| `points_history_plugin` | `GET /loyalty/history/{twitch_id}` |
-| `create_reward_plugin` | `POST /loyalty/rewards` |
-| `list_rewards_plugin` | `GET /loyalty/rewards` |
-| `redeem_reward_plugin` | `POST /loyalty/redeem` — atomic: check balance, deduct, record |
+| `viewer_activity_plugin` | `chat.message.received` → upsert viewer (first_seen, last_seen, login, display_name) |
+| `get_viewer_plugin` | `GET /viewers/{twitch_id}` |
+| `leaderboard_plugin` | `GET /viewers/leaderboard?limit=10` — sorted by points |
+| `adjust_points_plugin` | `POST /viewers/{twitch_id}/points  { "delta": int }` — add or deduct points |
+| `list_regulars_plugin` | `GET /viewers/regulars` |
+| `add_regular_plugin` | `POST /viewers/regulars  { twitch_id, login, display_name }` |
+| `remove_regular_plugin` | `DELETE /viewers/regulars/{twitch_id}` |
+| `regulars_command_plugin` | `!regulars add/remove/list` from chat (mod only) |
 
-Points table: follow=100, subscribe=500, resub=300, gift=200×count, cheer=1×bits, raid=10×viewers
+DB table: `viewers (twitch_id, login, display_name, points, total_earned, is_regular, first_seen, last_seen)`
 
-Publishes: `loyalty.points.awarded`, `loyalty.reward.redeemed`
+Publishes: `viewer.points.awarded`, `viewer.regular.added`, `viewer.regular.removed`
+
+#### `!regulars` chat command
+
+```
+!regulars add @username    — add to regulars list (looks up by login; falls back to Twitch API if not seen yet)
+!regulars remove @username — remove from regulars list
+!regulars list             — list all regulars in chat
+```
+
+Restricted to mods and broadcaster.
 
 ---
 
@@ -284,7 +381,65 @@ Aggregated stats and real-time alert stream.
 | `channel_stats_collector_plugin` | Cron `*/5 * * * *` — snapshots viewer/follower count to DB |
 | `channel_stats_history_plugin` | `GET /dashboard/stats/history` |
 
-`dashboard_alerts_plugin` uses the wildcard `twitch.on_event("*", ...)` — receives all EventSub events enriched with `_event_type`. Also subscribes to `stream.session.started/ended`, `loyalty.reward.redeemed`, `moderation.action.taken`.
+`dashboard_alerts_plugin` uses the wildcard `twitch.on_event("*", ...)` — receives all EventSub events enriched with `_event_type`. Also subscribes to `stream.session.started/ended`, `viewer.regular.added/removed`, `moderation.action.taken`.
+
+---
+
+### `timers`
+
+Recurring scheduled messages posted to chat.
+
+| Plugin | What it does |
+|---|---|
+| `create_timer_plugin` | `POST /timers` |
+| `get_timers_plugin` | `GET /timers` |
+| `update_timer_plugin` | `PUT /timers/{id}` |
+| `delete_timer_plugin` | `DELETE /timers/{id}` |
+| `timer_executor_plugin` | Schedules all enabled timers on boot; listens to create/update/delete events to add/remove jobs at runtime |
+
+A timer has: `name`, `message` (sent to chat), `interval_s` (how often), `enabled`.
+The executor uses the `scheduler` tool internally and requires an active Twitch session to send messages.
+
+Publishes: `timer.created`, `timer.updated`, `timer.deleted`
+
+---
+
+### `system`
+
+Observability and health monitoring for the running system.
+
+| Plugin | What it does |
+|---|---|
+| `system_status_plugin` | `GET /system/status` — registry dump: tools + plugins + their statuses |
+| `system_events_plugin` | `GET /system/events` — last 500 event bus records |
+| `system_events_stream_plugin` | `GET /system/events/stream` — SSE of live event bus activity |
+| `system_logs_stream_plugin` | `GET /system/logs/stream` — SSE of live logger output |
+| `system_traces_plugin` | `GET /system/traces/flat` and `GET /system/traces/tree` — causality trace viewer |
+| `system_traces_stream_plugin` | `GET /system/traces/stream` — SSE of live trace records |
+| `event_delivery_monitor_plugin` | Subscribes to failed event deliveries, republishes as `event.delivery.failed` |
+| `tool_health_plugin` | Periodic health checks on all registered tools |
+
+Publishes: `event.delivery.failed`
+
+---
+
+### `twitch_redemptions`
+
+Handlers for Twitch channel point redemptions.
+
+| Plugin | What it does |
+|---|---|
+| `hack_the_planet_plugin` | Example redemption handler — reacts to a specific channel point reward |
+
+Add new redemption handlers here by subscribing to `channel.channel_points_custom_reward_redemption.add` via `twitch.on_event(...)`.
+
+---
+
+### `ping`
+
+| Plugin | What it does |
+|---|---|
+| `ping_plugin` | `GET /ping` — returns `{"success": true, "data": "pong"}` |
 
 ---
 
@@ -303,6 +458,10 @@ All events published on the internal event bus:
 | `loyalty.reward.redeemed` | `redeem_reward_plugin` | twitch_id, display_name, reward_id, reward_name, cost |
 | `moderation.action.taken` | `auto_mod_plugin` | twitch_id, display_name, action, reason, rule_id |
 | `moderation.rules.updated` | rule CRUD plugins | rule_id, action |
+| `timer.created` | `create_timer_plugin` | id, name, interval_s |
+| `timer.updated` | `update_timer_plugin` | id, name, interval_s, enabled |
+| `timer.deleted` | `delete_timer_plugin` | id |
+| `event.delivery.failed` | `event_delivery_monitor_plugin` | event, event_id, subscriber, error |
 
 ---
 
@@ -824,6 +983,7 @@ Full interactive docs at `http://localhost:8000/docs` when the server is running
 
 | Method | Path | Description |
 |---|---|---|
+| GET | `/ping` | Health check |
 | GET | `/auth/twitch` | Start OAuth flow |
 | GET | `/auth/twitch/callback` | OAuth callback (Twitch redirects here) |
 | GET | `/stream/status` | Current stream state |
@@ -831,11 +991,19 @@ Full interactive docs at `http://localhost:8000/docs` when the server is running
 | GET | `/chat/stream` | SSE — live chat messages |
 | GET | `/chat/commands` | List chat commands |
 | POST | `/chat/commands` | Create chat command |
-| PUT | `/chat/commands/{name}` | Update chat command |
-| DELETE | `/chat/commands/{name}` | Delete chat command |
+| PUT | `/chat/commands/{id}` | Update chat command |
+| DELETE | `/chat/commands/{id}` | Delete chat command |
+| GET | `/chat/vars` | List stream variables |
+| POST | `/chat/vars` | Create stream variable |
+| PUT | `/chat/vars/{id}` | Update stream variable |
+| DELETE | `/chat/vars/{id}` | Delete stream variable |
+| GET | `/timers` | List timers |
+| POST | `/timers` | Create timer |
+| PUT | `/timers/{id}` | Update timer |
+| DELETE | `/timers/{id}` | Delete timer |
 | GET | `/loyalty/leaderboard` | Top viewers by points |
-| GET | `/loyalty/points/{twitch_id}` | Points for a viewer |
-| GET | `/loyalty/history/{twitch_id}` | Points transaction history |
+| GET | `/loyalty/viewers/{twitch_id}` | Points for a viewer |
+| GET | `/loyalty/viewers/{twitch_id}/history` | Points transaction history |
 | GET | `/loyalty/rewards` | List rewards |
 | POST | `/loyalty/rewards` | Create reward |
 | POST | `/loyalty/redeem` | Redeem a reward |
@@ -848,8 +1016,15 @@ Full interactive docs at `http://localhost:8000/docs` when the server is running
 | POST | `/moderation/timeout` | Manually timeout a user |
 | POST | `/moderation/unban` | Manually unban a user |
 | GET | `/dashboard/stats` | Aggregated stream stats |
-| GET | `/dashboard/alerts` | SSE — real-time event stream |
 | GET | `/dashboard/stats/history` | Viewer/follower count history |
+| GET | `/dashboard/alerts` | SSE — real-time event stream |
+| GET | `/system/status` | Tools and plugins health dump |
+| GET | `/system/events` | Last 500 internal event bus records |
+| GET | `/system/events/stream` | SSE — live event bus activity |
+| GET | `/system/logs/stream` | SSE — live logger output |
+| GET | `/system/traces/flat` | Event causality traces (flat) |
+| GET | `/system/traces/tree` | Event causality traces (tree) |
+| GET | `/system/traces/stream` | SSE — live trace records |
 
 ---
 

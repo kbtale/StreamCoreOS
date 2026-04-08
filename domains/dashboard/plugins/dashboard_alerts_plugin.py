@@ -7,7 +7,8 @@ from core.base_plugin import BasePlugin
 _BUS_EVENTS = [
     "stream.session.started",
     "stream.session.ended",
-    "loyalty.reward.redeemed",
+    "viewer.regular.added",
+    "viewer.regular.removed",
     "moderation.action.taken",
     "dashboard.stats.updated",
 ]

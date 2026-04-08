@@ -8,6 +8,9 @@ class CommandData(BaseModel):
     name: str
     response: str
     cooldown_s: int
+    global_cooldown_s: int
+    userlevel: str
+    use_count: int
     enabled: bool
 
 
@@ -35,7 +38,7 @@ class ListCommandsPlugin(BasePlugin):
     async def execute(self, data: dict, context=None):
         try:
             rows = await self.db.query(
-                "SELECT id, name, response, cooldown_s, enabled FROM chat_commands ORDER BY name"
+                "SELECT id, name, response, cooldown_s, global_cooldown_s, userlevel, use_count, enabled FROM chat_commands ORDER BY name"
             )
             commands = [
                 {**r, "enabled": bool(r["enabled"])} for r in rows

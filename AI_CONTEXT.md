@@ -365,28 +365,20 @@ Async SQLite Persistence Tool (sqlite):
 ## 📦 Domains
 
 ### `chat_bot`
-- **Tables**: chat_command
-- **Endpoints**: DELETE /chat/commands/{id}, GET /chat/commands, POST /chat/commands, PUT /chat/commands/{id}
+- **Tables**: chat_command, chat_var
+- **Endpoints**: DELETE /chat/commands/{id}, DELETE /chat/vars/{id}, GET /chat/commands, GET /chat/reminders, GET /chat/vars, POST /chat/commands, POST /chat/vars, PUT /chat/commands/{id}, PUT /chat/vars/{id}
 - **Events emitted**: chat.command.executed, chat.command.received, chat.message.received
 - **Events consumed**: chat.command.received, chat.message.received
-- **Dependencies**: db, event_bus, http, logger, state, twitch
-- **Plugins**: ChatAutoResponsePlugin, ChatCommandHandlerPlugin, ChatMessageDispatcherPlugin, ChatStreamPlugin, CreateCommandPlugin, DeleteCommandPlugin, IAChatPlugin, ListCommandsPlugin, UpdateCommandPlugin
+- **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
+- **Plugins**: ChatAutoResponsePlugin, ChatCommandHandlerPlugin, ChatMessageDispatcherPlugin, ChatStreamPlugin, CommandsListPlugin, CreateCommandPlugin, CreateVarPlugin, DeleteCommandPlugin, DeleteVarPlugin, EchoReminderPlugin, IAChatPlugin, ListCommandsPlugin, ListRemindersPlugin, ListVarsPlugin, UpdateCommandPlugin, UpdateVarPlugin, VarCommandPlugin
 
 ### `dashboard`
 - **Tables**: channel_stats
 - **Endpoints**: GET /dashboard/stats, GET /dashboard/stats/history
 - **Events emitted**: dashboard.stats.updated
-- **Events consumed**: dashboard.stats.updated, loyalty.reward.redeemed, moderation.action.taken, stream.session.ended, stream.session.started
+- **Events consumed**: dashboard.stats.updated, moderation.action.taken, stream.session.ended, stream.session.started, viewer.regular.added, viewer.regular.removed
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: ChannelStatsCollectorPlugin, ChannelStatsHistoryPlugin, DashboardAlertsPlugin, DashboardStatsPlugin
-
-### `loyalty`
-- **Tables**: viewer_points
-- **Endpoints**: GET /loyalty/leaderboard, GET /loyalty/rewards, GET /loyalty/viewers/{twitch_id}, GET /loyalty/viewers/{twitch_id}/history, POST /loyalty/redeem, POST /loyalty/rewards
-- **Events emitted**: loyalty.points.awarded, loyalty.reward.redeemed
-- **Events consumed**: chat.message.received
-- **Dependencies**: db, event_bus, http, logger, state, twitch
-- **Plugins**: AwardPointsPlugin, ChatActivityPointsPlugin, CreateRewardPlugin, GetViewerPointsPlugin, LeaderboardPlugin, ListRewardsPlugin, PointsHistoryPlugin, RedeemRewardPlugin
 
 ### `moderation`
 - **Tables**: mod_rule
@@ -443,4 +435,12 @@ Async SQLite Persistence Tool (sqlite):
 - **Events consumed**: none
 - **Dependencies**: logger, twitch
 - **Plugins**: HackThePlanetPlugin
+
+### `viewers`
+- **Tables**: viewer
+- **Endpoints**: DELETE /viewers/regulars/{twitch_id}, GET /viewers/leaderboard, GET /viewers/regulars, GET /viewers/{twitch_id}, POST /viewers/regulars, POST /viewers/{twitch_id}/points
+- **Events emitted**: viewer.points.awarded, viewer.regular.added, viewer.regular.removed
+- **Events consumed**: chat.command.received, chat.message.received
+- **Dependencies**: db, event_bus, http, logger, twitch
+- **Plugins**: AddRegularPlugin, AdjustPointsPlugin, GetViewerPlugin, LeaderboardPlugin, ListRegularsPlugin, RegularsCommandPlugin, RemoveRegularPlugin, ViewerActivityPlugin
 

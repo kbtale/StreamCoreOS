@@ -1,5 +1,12 @@
+import re
+import random as _random
 from datetime import datetime, timezone
 from core.base_plugin import BasePlugin
+
+_VAR_PATTERN = re.compile(r'\{var:([a-z0-9_]+)\}')
+_RANDOM_PATTERN = re.compile(r'\{random (\d+)-(\d+)\}')
+
+_LEVELS = ["everyone", "subscriber", "vip", "regular", "moderator", "broadcaster"]
 
 
 def _format_duration(total_seconds: float) -> str:
@@ -32,20 +39,23 @@ class ChatCommandHandlerPlugin(BasePlugin):
 
     Subscribes to chat.command.received. For each command:
       1. Looks up the command in DB by name.
-      2. Checks per-user cooldown via the state tool.
-      3. Resolves dynamic variables in the response template.
-      4. Sends the response to chat.
-      5. Publishes chat.command.executed.
+      2. Checks userlevel permission.
+      3. Checks per-user and global cooldowns via the state tool.
+      4. Resolves dynamic variables in the response template.
+      5. Sends the response to chat.
+      6. Publishes chat.command.executed.
 
     Supported variables in command responses:
-      {user}      — Display name of the chatter who triggered the command.
-      {channel}   — Channel name.
-      {followage} — How long the user has been following (e.g. "2 years, 3 months").
-      {uptime}    — How long the stream has been live (e.g. "1 hour, 20 minutes").
-      {game}      — Current game/category being streamed.
-      {viewers}   — Current viewer count.
-
-    Example: "!followage" → response "{user} has been following for {followage}!"
+      {user}          — Display name of the chatter who triggered the command.
+      {touser}        — First @mention after the command, or {user} if none.
+      {channel}       — Channel name.
+      {count}         — How many times this command has been used (including this one).
+      {random X-Y}    — Random integer between X and Y inclusive.
+      {followage}     — How long the user has been following.
+      {uptime}        — How long the stream has been live.
+      {game}          — Current game/category being streamed.
+      {viewers}       — Current viewer count.
+      {var:name}      — Value of a stream variable from chat_vars table.
     """
 
     def __init__(self, twitch, event_bus, db, state, logger):
@@ -73,19 +83,43 @@ class ChatCommandHandlerPlugin(BasePlugin):
             if not cmd:
                 return
 
-            # Check cooldown per user
-            cooldown_key = f"cmd_cooldown:{command_name}:{user_id}"
-            if self.state.get(cooldown_key, namespace="chat_bot"):
+            # Check userlevel
+            if not await self._has_permission(data, cmd["userlevel"]):
                 return
 
-            self.state.set(cooldown_key, True, namespace="chat_bot")
+            # Check per-user cooldown
+            user_cooldown_key = f"cmd_cooldown:{command_name}:{user_id}"
+            if self.state.get(user_cooldown_key, namespace="chat_bot"):
+                return
+
+            # Check global cooldown
+            global_cooldown_key = f"cmd_global:{command_name}"
+            if self.state.get(global_cooldown_key, namespace="chat_bot"):
+                return
+
+            # Arm cooldowns
             import asyncio
-            asyncio.get_event_loop().call_later(
-                cmd["cooldown_s"],
-                lambda: self.state.delete(cooldown_key, namespace="chat_bot"),
+            loop = asyncio.get_event_loop()
+            if cmd["cooldown_s"] > 0:
+                self.state.set(user_cooldown_key, True, namespace="chat_bot")
+                loop.call_later(
+                    cmd["cooldown_s"],
+                    lambda: self.state.delete(user_cooldown_key, namespace="chat_bot"),
+                )
+            if cmd["global_cooldown_s"] > 0:
+                self.state.set(global_cooldown_key, True, namespace="chat_bot")
+                loop.call_later(
+                    cmd["global_cooldown_s"],
+                    lambda: self.state.delete(global_cooldown_key, namespace="chat_bot"),
+                )
+
+            # Increment use_count and get the new value
+            new_count = await self.db.execute(
+                "UPDATE chat_commands SET use_count = use_count + 1 WHERE name=$1 RETURNING use_count",
+                [command_name],
             )
 
-            response = await self._resolve(cmd["response"], data)
+            response = await self._resolve(cmd["response"], data, new_count or 1)
             await self.twitch.send_message(channel, response)
             await self.bus.publish("chat.command.executed", {
                 "command": command_name,
@@ -96,15 +130,30 @@ class ChatCommandHandlerPlugin(BasePlugin):
         except Exception as e:
             self.logger.error(f"[CommandHandler] Error handling {command_name}: {e}")
 
-    async def _resolve(self, template: str, data: dict) -> str:
+    async def _resolve(self, template: str, data: dict, count: int) -> str:
         """Replace all {variable} placeholders in the template with live data."""
         result = template
 
         if "{user}" in result:
             result = result.replace("{user}", data.get("display_name", ""))
 
+        if "{touser}" in result:
+            args = data.get("args", "").strip()
+            words = args.split()
+            touser = words[0].lstrip("@") if words else data.get("display_name", "")
+            result = result.replace("{touser}", touser)
+
         if "{channel}" in result:
             result = result.replace("{channel}", data.get("channel", ""))
+
+        if "{count}" in result:
+            result = result.replace("{count}", str(count))
+
+        if _RANDOM_PATTERN.search(result):
+            result = _RANDOM_PATTERN.sub(
+                lambda m: str(_random.randint(int(m.group(1)), int(m.group(2)))),
+                result,
+            )
 
         if "{followage}" in result:
             result = result.replace("{followage}", await self._get_followage(data))
@@ -117,10 +166,55 @@ class ChatCommandHandlerPlugin(BasePlugin):
             result = result.replace("{game}", stream_info.get("game", "Unknown"))
             result = result.replace("{viewers}", str(stream_info.get("viewers", 0)))
 
+        if _VAR_PATTERN.search(result):
+            result = await self._resolve_vars(result)
+
         return result
 
+    async def _resolve_vars(self, template: str) -> str:
+        """Replace {var:name} placeholders with values from chat_vars table."""
+        result = template
+        for match in _VAR_PATTERN.finditer(template):
+            var_name = match.group(1)
+            row = await self.db.query_one(
+                "SELECT value FROM chat_vars WHERE name=$1 AND enabled=1", [var_name]
+            )
+            result = result.replace(match.group(0), row["value"] if row else "?")
+        return result
+
+    def _get_user_level(self, data: dict) -> str:
+        if data.get("is_broadcaster"):
+            return "broadcaster"
+        if data.get("is_mod"):
+            return "moderator"
+        if "vip" in data.get("badges", {}):
+            return "vip"
+        if data.get("is_sub"):
+            return "subscriber"
+        return "everyone"
+
+    async def _has_permission(self, data: dict, required: str) -> bool:
+        user_level = self._get_user_level(data)
+        try:
+            user_idx = _LEVELS.index(user_level)
+            required_idx = _LEVELS.index(required)
+        except ValueError:
+            return False
+
+        if user_idx >= required_idx:
+            return True
+
+        # Extra check: is this user in the regulars list?
+        if required == "regular":
+            row = await self.db.query_one(
+                "SELECT id FROM viewers WHERE twitch_id=$1 AND is_regular=1",
+                [data.get("user_id", "")],
+            )
+            return row is not None
+
+        return False
+
     async def _get_followage(self, data: dict) -> str:
-        """Returns how long the chatter has been following, e.g. '2 years, 3 months'."""
         try:
             session = self.twitch.get_session()
             if not session:
@@ -149,7 +243,6 @@ class ChatCommandHandlerPlugin(BasePlugin):
             return "unknown"
 
     def _get_uptime(self) -> str:
-        """Returns stream uptime from shared state, e.g. '1 hour, 20 minutes'."""
         try:
             started_at = self.state.get("started_at", namespace="stream_state")
             if not started_at:
@@ -162,7 +255,6 @@ class ChatCommandHandlerPlugin(BasePlugin):
             return "unknown"
 
     async def _get_stream_info(self) -> dict:
-        """Returns current game name and viewer count from Helix /streams."""
         try:
             session = self.twitch.get_session()
             if not session:

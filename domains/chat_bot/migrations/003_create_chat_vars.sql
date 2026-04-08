@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS chat_vars (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    value TEXT NOT NULL DEFAULT '0',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
