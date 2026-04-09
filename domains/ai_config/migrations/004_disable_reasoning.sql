@@ -1,0 +1,1 @@
+ALTER TABLE ai_config ADD COLUMN disable_reasoning INTEGER NOT NULL DEFAULT 0;

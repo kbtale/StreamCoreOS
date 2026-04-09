@@ -1,0 +1,11 @@
+services:
+  app:
+    build: .
+    ports:
+      - "${HTTP_PORT:-8000}:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./database.db:/app/database.db
+    command: sh -c "touch /app/database.db && uv run main.py"
+    restart: unless-stopped

@@ -71,9 +71,10 @@ class AiModPlugin(BasePlugin):
             response = await self.ai.complete(
                 messages=[{"role": "user", "content": f"Message: {message}"}],
                 system=f"{system_prompt}\nRespond ONLY with TRUE or FALSE. No explanations.",
-                max_tokens=5,
-                temperature=0.0,
+                max_tokens=512,
+                temperature=0.5,
             )
+            print(f"[AiMod] Rule #{rule['id']} evaluated with response: {response}")
             return response.strip().upper() == "TRUE"
         except Exception as e:
             self.logger.error(f"[AiMod] Evaluation failed for rule #{rule['id']}: {e}")

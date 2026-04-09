@@ -5,7 +5,8 @@ from core.base_tool import BaseTool
 class AITool(BaseTool):
     """
     OpenAI-compatible AI tool.
-    Config (endpoint_url, api_key, model) is stored in the DB and loaded at runtime.
+    Config is injected via load_config() — by RestoreAIConfigPlugin on boot and
+    SaveAIConfigPlugin on update. This tool never touches the DB directly.
     Supports any provider with an OpenAI-compatible /v1/chat/completions endpoint:
     OpenAI, Anthropic (compat), Gemini (compat), Ollama, LM Studio, Groq, etc.
     """
@@ -15,28 +16,13 @@ class AITool(BaseTool):
         return "ai"
 
     async def setup(self):
-        self._db = None
         self._config: dict | None = None
-        print("[AITool] Ready — waiting for DB config.")
+        print("[AITool] Ready — waiting for config.")
 
-    async def on_boot_complete(self, container):
-        if container.has_tool("db"):
-            self._db = container.get("db")
-            await self._load_config()
-
-    async def _load_config(self):
-        if not self._db:
-            return
-        try:
-            row = await self._db.query_one("SELECT * FROM ai_config LIMIT 1")
-            self._config = dict(row) if row else None
-        except Exception as e:
-            print(f"[AITool] Could not load config: {e}")
-            self._config = None
-
-    async def reload_config(self):
-        """Call this after saving new config from a plugin."""
-        await self._load_config()
+    def load_config(self, config: dict) -> None:
+        """Receive config from a plugin (e.g. RestoreAIConfigPlugin on boot,
+        SaveAIConfigPlugin on update). AITool never touches the DB directly."""
+        self._config = config
 
     def is_configured(self) -> bool:
         return bool(
@@ -58,6 +44,7 @@ class AITool(BaseTool):
             "chat_system_prompt": self._config.get("chat_system_prompt", ""),
             "chat_max_tokens":    self._config.get("chat_max_tokens", 200),
             "chat_temperature":   self._config.get("chat_temperature", 0.7),
+            "disable_reasoning":  bool(self._config.get("disable_reasoning", False)),
             "updated_at":         self._config.get("updated_at"),
         }
 
@@ -114,6 +101,8 @@ class AITool(BaseTool):
             "temperature": temperature,
             "max_tokens":  max_tokens,
         }
+        if self._config.get("disable_reasoning"):
+            payload["reasoning"] = {"exclude": True}
 
         headers = {"Content-Type": "application/json"}
         api_key = self._config.get("api_key", "").strip()
@@ -122,11 +111,32 @@ class AITool(BaseTool):
 
         endpoint_url = self._config["endpoint_url"].rstrip("/")
 
-        async with httpx.AsyncClient(timeout=45.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(endpoint_url, json=payload, headers=headers)
             resp.raise_for_status()
-            result = resp.json()
-            return result["choices"][0]["message"]["content"].strip()
+            try:
+                result = resp.json()
+            except Exception:
+                raise RuntimeError(
+                    f"Provider returned non-JSON response (status={resp.status_code}): {resp.text[:500]!r}"
+                )
+            choice = result["choices"][0]
+            content = (choice["message"].get("content") or "").strip()
+            finish_reason = choice.get("finish_reason", "")
+            if not content:
+                # Reasoning models (Nemotron, DeepSeek R1, etc.) put their thinking in
+                # reasoning_content and the final answer in content. If content is empty
+                # but reasoning_content has a clear TRUE/FALSE at the end, use it.
+                reasoning = (choice["message"].get("reasoning_content") or "").strip()
+                if reasoning:
+                    last_word = reasoning.split()[-1].upper().rstrip(".,!?") if reasoning.split() else ""
+                    if last_word in ("TRUE", "FALSE"):
+                        return last_word
+                raise RuntimeError(
+                    f"Model returned empty content (finish_reason={finish_reason!r}). "
+                    f"Raw choice: {choice}"
+                )
+            return content
 
     def get_interface_description(self) -> str:
         return """
@@ -142,14 +152,15 @@ AI Tool (ai):
             temperature: 0.0 for deterministic (ideal for moderation)
         - is_configured() -> bool: True if endpoint_url and model are set.
         - get_config() -> dict | None: Current config without the api_key.
-        - await reload_config(): Refresh config from DB (call after saving new config).
+        - load_config(config: dict): Push new config into the tool (called by plugins, never touches DB).
     - COMMON ENDPOINTS:
-        OpenAI:    https://api.openai.com/v1/chat/completions
-        Anthropic: https://api.anthropic.com/v1/chat/completions
-        Gemini:    https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
-        Groq:      https://api.groq.com/openai/v1/chat/completions
-        Ollama:    http://localhost:11434/v1/chat/completions
-        LM Studio: http://localhost:1234/v1/chat/completions
+        OpenAI:      https://api.openai.com/v1/chat/completions
+        Anthropic:   https://api.anthropic.com/v1/chat/completions
+        Gemini:      https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+        Groq:        https://api.groq.com/openai/v1/chat/completions
+        OpenRouter:  https://openrouter.ai/api/v1/chat/completions
+        Ollama:      http://localhost:11434/v1/chat/completions
+        LM Studio:   http://localhost:1234/v1/chat/completions
     """
 
     async def shutdown(self):

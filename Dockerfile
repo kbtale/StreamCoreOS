@@ -28,8 +28,8 @@ COPY . .
 # HTTP_HOST must be 0.0.0.0 in a container — otherwise the server only
 # listens on loopback and no external requests can reach it.
 ENV HTTP_HOST=0.0.0.0
-ENV HTTP_PORT=5000
+ENV HTTP_PORT=8000
 
-EXPOSE 5000
+EXPOSE 8000
 
 CMD ["uv", "run", "main.py"]

@@ -36,7 +36,7 @@ class TestAIConfigPlugin(BasePlugin):
         try:
             response = await self.ai.complete(
                 messages=[{"role": "user", "content": "Reply with just the word OK."}],
-                max_tokens=5,
+                max_tokens=512,
                 temperature=0.0,
             )
             latency_ms = round((time.perf_counter() - start) * 1000)

@@ -115,14 +115,15 @@ AI Tool (ai):
             temperature: 0.0 for deterministic (ideal for moderation)
         - is_configured() -> bool: True if endpoint_url and model are set.
         - get_config() -> dict | None: Current config without the api_key.
-        - await reload_config(): Refresh config from DB (call after saving new config).
+        - load_config(config: dict): Push new config into the tool (called by plugins, never touches DB).
     - COMMON ENDPOINTS:
-        OpenAI:    https://api.openai.com/v1/chat/completions
-        Anthropic: https://api.anthropic.com/v1/chat/completions
-        Gemini:    https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
-        Groq:      https://api.groq.com/openai/v1/chat/completions
-        Ollama:    http://localhost:11434/v1/chat/completions
-        LM Studio: http://localhost:1234/v1/chat/completions
+        OpenAI:      https://api.openai.com/v1/chat/completions
+        Anthropic:   https://api.anthropic.com/v1/chat/completions
+        Gemini:      https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+        Groq:        https://api.groq.com/openai/v1/chat/completions
+        OpenRouter:  https://openrouter.ai/api/v1/chat/completions
+        Ollama:      http://localhost:11434/v1/chat/completions
+        LM Studio:   http://localhost:1234/v1/chat/completions
 ```
 
 ### 🔧 Tool: `http` (Status: ✅)
@@ -394,7 +395,7 @@ Async SQLite Persistence Tool (sqlite):
 - **Events emitted**: none
 - **Events consumed**: none
 - **Dependencies**: ai, db, http, logger
-- **Plugins**: GetAIConfigPlugin, SaveAIConfigPlugin, TestAIConfigPlugin
+- **Plugins**: GetAIConfigPlugin, RestoreAIConfigPlugin, SaveAIConfigPlugin, TestAIConfigPlugin
 
 ### `chat_bot`
 - **Tables**: chat_command, chat_var

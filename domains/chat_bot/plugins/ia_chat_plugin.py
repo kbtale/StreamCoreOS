@@ -1,4 +1,5 @@
 import asyncio
+import time
 from core.base_plugin import BasePlugin
 
 MAX_RESPONSE_CHARS = 450  # Twitch chat limit is 500
@@ -39,11 +40,18 @@ class IAChatPlugin(BasePlugin):
 
         user_id = data.get("user_id", "")
         cooldown_key = f"ia_cooldown:{user_id}"
-        if self.state.get(cooldown_key, namespace="ia_chat"):
-            return
+        expires_at = self.state.get(cooldown_key, namespace="ia_chat")
+        if expires_at:
+            remaining = int(expires_at - time.time())
+            if remaining > 0:
+                await self.twitch.send_message(
+                    data["channel"],
+                    f"@{data['display_name']} Espera {remaining}s antes de volver a usar !ia.",
+                )
+                return
 
         cooldown_s = self.ai.get_chat_cooldown()
-        self.state.set(cooldown_key, True, namespace="ia_chat")
+        self.state.set(cooldown_key, time.time() + cooldown_s, namespace="ia_chat")
         asyncio.get_event_loop().call_later(
             cooldown_s,
             lambda: self.state.delete(cooldown_key, namespace="ia_chat"),
@@ -62,12 +70,14 @@ class IAChatPlugin(BasePlugin):
                 max_tokens=personality["max_tokens"],
                 temperature=personality["temperature"],
             )
+            if not answer:
+                raise ValueError("Empty response from model")
             reply = f"@{data['display_name']} {answer}"
             if len(reply) > MAX_RESPONSE_CHARS:
                 reply = reply[: MAX_RESPONSE_CHARS - 1] + "…"
             await self.twitch.send_message(data["channel"], reply)
         except Exception as e:
-            self.logger.error(f"[IAChatPlugin] {e}")
+            self.logger.error(f"[IAChatPlugin] {type(e).__name__}: {e}")
             await self.twitch.send_message(
                 data["channel"],
                 f"@{data['display_name']} No pude obtener respuesta. Inténtalo más tarde.",
