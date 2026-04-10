@@ -8,6 +8,10 @@ class AIConfigData(BaseModel):
     endpoint_url:       str
     model:              str
     has_api_key:        bool
+    timeout_s:          int   = 120
+    disable_reasoning:  bool  = False
+    extra_headers:      dict  = {}
+    extra_payload:      dict  = {}
     chat_cooldown_s:    int   = 120
     chat_system_prompt: str   = ""
     chat_max_tokens:    int   = 200
@@ -22,7 +26,7 @@ class GetAIConfigResponse(BaseModel):
 
 
 class GetAIConfigPlugin(BasePlugin):
-    """GET /ai/config — Returns current AI config (never exposes the api_key)."""
+    """GET /ai/config — Returns current AI config (api_key is never exposed)."""
 
     def __init__(self, http, ai, logger):
         self.http = http

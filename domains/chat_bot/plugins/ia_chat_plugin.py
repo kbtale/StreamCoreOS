@@ -1,8 +1,9 @@
 import asyncio
 import time
 from core.base_plugin import BasePlugin
+from tools.ai.ai_tool import AIError
 
-MAX_RESPONSE_CHARS = 450  # Twitch chat limit is 500
+MAX_RESPONSE_CHARS = 450  # Twitch chat hard limit is 500
 
 
 class IAChatPlugin(BasePlugin):
@@ -23,30 +24,33 @@ class IAChatPlugin(BasePlugin):
         await self.bus.subscribe("chat.command.received", self._handle)
 
     async def _handle(self, data: dict):
-        command = data.get("command", "").lower()
-        if command != "!ia":
+        if data.get("command", "").lower() != "!ia":
             return
 
         if not self.ai.is_configured():
             return
 
         question = data.get("args", "").strip()
+        channel  = data["channel"]
+        name     = data["display_name"]
+
         if not question:
             await self.twitch.send_message(
-                data["channel"],
-                f"@{data['display_name']} Escribe tu pregunta después de !ia 😊",
+                channel,
+                f"@{name} Escribe tu pregunta después de !ia.",
             )
             return
 
-        user_id = data.get("user_id", "")
+        # Per-user cooldown
+        user_id     = data.get("user_id", "")
         cooldown_key = f"ia_cooldown:{user_id}"
-        expires_at = self.state.get(cooldown_key, namespace="ia_chat")
+        expires_at  = self.state.get(cooldown_key, namespace="ia_chat")
         if expires_at:
             remaining = int(expires_at - time.time())
             if remaining > 0:
                 await self.twitch.send_message(
-                    data["channel"],
-                    f"@{data['display_name']} Espera {remaining}s antes de volver a usar !ia.",
+                    channel,
+                    f"@{name} Espera {remaining}s antes de volver a usar !ia.",
                 )
                 return
 
@@ -57,10 +61,7 @@ class IAChatPlugin(BasePlugin):
             lambda: self.state.delete(cooldown_key, namespace="ia_chat"),
         )
 
-        await self.twitch.send_message(
-            data["channel"],
-            f"@{data['display_name']} Pensando... 🤔",
-        )
+        await self.twitch.send_message(channel, f"@{name} Pensando...")
 
         try:
             personality = self.ai.get_chat_personality()
@@ -70,15 +71,26 @@ class IAChatPlugin(BasePlugin):
                 max_tokens=personality["max_tokens"],
                 temperature=personality["temperature"],
             )
-            if not answer:
-                raise ValueError("Empty response from model")
-            reply = f"@{data['display_name']} {answer}"
+            reply = f"@{name} {answer}"
             if len(reply) > MAX_RESPONSE_CHARS:
                 reply = reply[: MAX_RESPONSE_CHARS - 1] + "…"
-            await self.twitch.send_message(data["channel"], reply)
-        except Exception as e:
-            self.logger.error(f"[IAChatPlugin] {type(e).__name__}: {e}")
-            await self.twitch.send_message(
-                data["channel"],
-                f"@{data['display_name']} No pude obtener respuesta. Inténtalo más tarde.",
-            )
+            await self.twitch.send_message(channel, reply)
+
+        except AIError as e:
+            self.logger.error(f"[IAChatPlugin] [{e.code}] {e}")
+            msg = _user_message_for_error(e.code, name)
+            await self.twitch.send_message(channel, msg)
+
+
+def _user_message_for_error(code: str, name: str) -> str:
+    messages = {
+        "rate_limited":        f"@{name} La IA está ocupada en este momento, intenta en un rato.",
+        "timeout":             f"@{name} La IA tardó demasiado en responder. Inténtalo de nuevo.",
+        "connection_error":    f"@{name} No pude conectar con la IA. Inténtalo más tarde.",
+        "provider_unavailable":f"@{name} El servicio de IA no está disponible ahora.",
+        "context_too_long":    f"@{name} Tu pregunta es demasiado larga, acórtala.",
+        "auth_failed":         f"@{name} Hay un problema de configuración con la IA.",
+        "model_not_found":     f"@{name} Hay un problema de configuración con la IA.",
+        "empty_response":      f"@{name} El modelo no generó una respuesta. Inténtalo de nuevo.",
+    }
+    return messages.get(code, f"@{name} No pude obtener respuesta. Inténtalo más tarde.")

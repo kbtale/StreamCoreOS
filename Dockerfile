@@ -13,7 +13,7 @@
 FROM python:3.12-slim
 
 # ── uv (fast Python package manager) ──────────────────────────────
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN pip install uv --quiet
 
 WORKDIR /app
 

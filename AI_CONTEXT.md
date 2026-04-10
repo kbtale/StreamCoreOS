@@ -104,26 +104,61 @@ Configuration Tool (config):
 ### 🔧 Tool: `ai` (Status: ✅)
 ```text
 AI Tool (ai):
-    - PURPOSE: Send prompts to any OpenAI-compatible LLM. Config is stored in DB and
-      managed via /ai/config endpoints. Supports OpenAI, Anthropic, Gemini, Ollama, Groq, etc.
-    - CONFIG: Set via PUT /ai/config — {provider, endpoint_url, api_key, model}
+    - PURPOSE: Robust AI completions for local (Ollama, LM Studio, llama.cpp) and cloud
+      providers via any OpenAI-compatible endpoint.
+      Config is pushed via load_config() — never touches DB directly.
+    - PROVIDERS: ollama | lm_studio | llama_cpp | openai | openrouter | groq | anthropic_compat | custom
+    - CONFIG FIELDS (set via PUT /ai/config):
+        provider           — provider name (controls header/payload behaviour)
+        endpoint_url       — full completions URL
+        api_key            — Bearer token (empty for local providers)
+        model              — model name as the provider expects it
+        timeout_s          — request timeout in seconds (default: 120)
+        disable_reasoning  — suppress reasoning tokens when provider supports it
+        extra_headers      — JSON dict of additional HTTP headers
+        extra_payload      — JSON dict of extra payload fields
+                             e.g. {"num_ctx": 8192} for Ollama context size
+                             e.g. {"num_predict": 256} for llama.cpp token limit
+        chat_cooldown_s    — !ia command per-user cooldown in seconds
+        chat_system_prompt — personality for !ia command
+        chat_max_tokens    — max tokens for !ia responses
+        chat_temperature   — temperature for !ia responses
+    - ERRORS: All methods raise AIError. Check .code for machine-readable cause:
+        "not_configured"       load_config() not called
+        "auth_failed"          bad API key (401)
+        "rate_limited"         rate limit hit (429)
+        "model_not_found"      bad model/endpoint (404)
+        "context_too_long"     input exceeds context (400)
+        "invalid_request"      other bad request (400)
+        "provider_unavailable" server error (5xx)
+        "empty_response"       model returned no content
+        "invalid_response"     unexpected response structure
+        "invalid_json"         complete_json() couldn't parse response
+        "timeout"              request exceeded timeout_s
+        "connection_error"     could not connect to endpoint
+        "provider_error"       any other HTTP error
     - CAPABILITIES:
-        - await complete(messages, system?, max_tokens?, temperature?) -> str:
-            Send a list of messages and get a text response.
-            messages: [{"role": "user"|"assistant", "content": str}]
-            system: optional system prompt string
-            temperature: 0.0 for deterministic (ideal for moderation)
-        - is_configured() -> bool: True if endpoint_url and model are set.
-        - get_config() -> dict | None: Current config without the api_key.
-        - load_config(config: dict): Push new config into the tool (called by plugins, never touches DB).
-    - COMMON ENDPOINTS:
-        OpenAI:      https://api.openai.com/v1/chat/completions
-        Anthropic:   https://api.anthropic.com/v1/chat/completions
-        Gemini:      https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
-        Groq:        https://api.groq.com/openai/v1/chat/completions
-        OpenRouter:  https://openrouter.ai/api/v1/chat/completions
-        Ollama:      http://localhost:11434/v1/chat/completions
-        LM Studio:   http://localhost:1234/v1/chat/completions
+        - await complete(messages, system?, max_tokens?, temperature?) -> str
+            Returns the model's text response.
+        - await complete_json(messages, system?, max_tokens?, temperature?) -> dict
+            Returns a parsed JSON object. System prompt must instruct the model to
+            respond with JSON. Strips markdown fences automatically.
+            Injects response_format=json_object for capable providers
+            (openai, groq, openrouter, anthropic_compat).
+            Example system: 'Respond ONLY with: {"flagged": true|false, "reason": "..."}'
+        - is_configured() -> bool
+        - get_config() -> dict | None  (never exposes api_key)
+        - load_config(config: dict)
+        - get_chat_cooldown() -> int
+        - get_chat_personality() -> dict
+    - LOCAL ENDPOINTS:
+        Ollama:    http://localhost:11434/v1/chat/completions
+        LM Studio: http://localhost:1234/v1/chat/completions
+        llama.cpp: http://localhost:8080/v1/chat/completions
+    - CLOUD ENDPOINTS:
+        OpenAI:     https://api.openai.com/v1/chat/completions
+        Groq:       https://api.groq.com/openai/v1/chat/completions
+        OpenRouter: https://openrouter.ai/api/v1/chat/completions
 ```
 
 ### 🔧 Tool: `http` (Status: ✅)
@@ -262,24 +297,6 @@ Context Manager Tool (context_manager):
             - Generates per-domain AI_CONTEXT.md files inside each domain folder.
 ```
 
-### 🔧 Tool: `auth` (Status: ✅)
-```text
-Authentication Tool (auth):
-        - PURPOSE: Manage system security, password hashing, and JWT token lifecycle.
-        - CAPABILITIES:
-            - hash_password(password: str) -> str: Securely hashes a plain-text password using bcrypt.
-            - verify_password(password: str, hashed_password: str) -> bool: Verifies if a password matches its hash.
-            - create_token(data: dict, expires_delta: Optional[int] = None) -> str: 
-                Generates a JWT signed token. 'data' should contain claims (e.g. {'sub': user_id}). 
-                'expires_delta' is optional minutes until expiration.
-            - decode_token(token: str) -> dict: 
-                Verifies and decodes a JWT token. Returns the payload dictionary. 
-                Raises Exception if token is expired or invalid.
-            - validate_token(token: str) -> dict | None:
-                Safe, non-throwing token validation. Returns the decoded payload
-                if valid, or None if expired/invalid. Ideal for middleware guards.
-```
-
 ### 🔧 Tool: `registry` (Status: ✅)
 ```text
 Systems Registry Tool (registry):
@@ -314,6 +331,24 @@ Systems Registry Tool (registry):
             - update_tool_status(name, status, message=None): Manually override a tool's health status.
                 status: "OK" | "FAIL" | "DEAD".
                 Intended for health-check plugins that verify tools proactively.
+```
+
+### 🔧 Tool: `auth` (Status: ✅)
+```text
+Authentication Tool (auth):
+        - PURPOSE: Manage system security, password hashing, and JWT token lifecycle.
+        - CAPABILITIES:
+            - hash_password(password: str) -> str: Securely hashes a plain-text password using bcrypt.
+            - verify_password(password: str, hashed_password: str) -> bool: Verifies if a password matches its hash.
+            - create_token(data: dict, expires_delta: Optional[int] = None) -> str: 
+                Generates a JWT signed token. 'data' should contain claims (e.g. {'sub': user_id}). 
+                'expires_delta' is optional minutes until expiration.
+            - decode_token(token: str) -> dict: 
+                Verifies and decodes a JWT token. Returns the payload dictionary. 
+                Raises Exception if token is expired or invalid.
+            - validate_token(token: str) -> dict | None:
+                Safe, non-throwing token validation. Returns the decoded payload
+                if valid, or None if expired/invalid. Ideal for middleware guards.
 ```
 
 ### 🔧 Tool: `scheduler` (Status: ✅)
